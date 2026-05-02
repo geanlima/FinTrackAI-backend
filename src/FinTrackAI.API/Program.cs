@@ -16,6 +16,14 @@ using Microsoft.Extensions.Options;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
+// ANTHROPIC_API_KEY (comum em PaaS) não mapeia sozinho para a seção Anthropic:ApiKey.
+if (string.IsNullOrWhiteSpace(builder.Configuration["Anthropic:ApiKey"]))
+{
+    string? deAmbiente = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+    if (!string.IsNullOrWhiteSpace(deAmbiente))
+        builder.Configuration["Anthropic:ApiKey"] = deAmbiente;
+}
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
