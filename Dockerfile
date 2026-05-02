@@ -23,10 +23,8 @@ WORKDIR /app
 
 COPY --from=build /app/publish .
 
-# Porta da API
+# Render injeta PORT em runtime; $$ vira $ no script visto pelo shell do container.
 EXPOSE 8080
+ENV PORT=8080
 
-# Variável para o ASP.NET escutar em todas as interfaces
-ENV ASPNETCORE_URLS=http://+:8080
-
-ENTRYPOINT ["dotnet", "FinTrackAI.API.dll"]
+ENTRYPOINT ["/bin/sh", "-c", "exec dotnet FinTrackAI.API.dll --urls http://0.0.0.0:$$PORT"]
