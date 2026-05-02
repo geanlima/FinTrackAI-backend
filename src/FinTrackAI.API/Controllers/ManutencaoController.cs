@@ -50,6 +50,7 @@ public sealed class ManutencaoController : ControllerBase
     }
 
     [HttpGet("anthropic-api-key/status")]
+    [HttpGet("chave-anthropic/status")]
     public ActionResult<AnthropicKeyStatusDto> GetAnthropicKeyStatus()
     {
         bool memoria = _anthropicKeyState.HasOverride;
@@ -59,7 +60,9 @@ public sealed class ManutencaoController : ControllerBase
         return Ok(new AnthropicKeyStatusDto(configurada, origem));
     }
 
+    /// <summary>Grava a chave Anthropic em memória (válida até reiniciar a API). Body JSON: <c>{"apiKey":"sk-ant-..."}</c>. Envie <c>null</c> ou string vazia para limpar a chave da memória.</summary>
     [HttpPost("anthropic-api-key")]
+    [HttpPost("chave-anthropic")]
     public ActionResult<object> DefinirAnthropicApiKey([FromBody] AnthropicApiKeyBodyDto? body)
     {
         _anthropicKeyState.SetOverride(body?.ApiKey);
