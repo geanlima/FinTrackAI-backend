@@ -1,0 +1,43 @@
+# Build
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]uild/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio / Rider
+.vs/
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+.idea/
+
+# NuGet
+*.nupkg
+**/packages/
+project.lock.json
+
+# .NET
+*.dll
+*.exe
+*.pdb
+*.cache
+*.log
+TestResults/
+
+# Secrets & ambiente local (não versionar chaves)
+appsettings.*.local.json
+*.pfx
+secrets.json
+
+# OS
+Thumbs.db
+.DS_Store
