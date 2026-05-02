@@ -26,6 +26,7 @@ public sealed class ManutencaoController : ControllerBase
     private readonly IManutencaoService _manutencao;
     private readonly FinTrackDbContext _db;
     private readonly ImportacaoState _importacaoState;
+    private readonly DataSourceState _dataSource;
     private readonly IConfiguration _configuration;
     private readonly IWebHostEnvironment _env;
     private readonly AnthropicApiKeyState _anthropicKeyState;
@@ -35,6 +36,7 @@ public sealed class ManutencaoController : ControllerBase
         IManutencaoService manutencao,
         FinTrackDbContext db,
         ImportacaoState importacaoState,
+        DataSourceState dataSource,
         IConfiguration configuration,
         IWebHostEnvironment env,
         AnthropicApiKeyState anthropicKeyState,
@@ -43,10 +45,60 @@ public sealed class ManutencaoController : ControllerBase
         _manutencao = manutencao;
         _db = db;
         _importacaoState = importacaoState;
+        _dataSource = dataSource;
         _configuration = configuration;
         _env = env;
         _anthropicKeyState = anthropicKeyState;
         _anthropicSettings = anthropicSettings;
+    }
+
+    /// <summary>Indica se a API está lendo PostgreSQL ou o SQLite definido em <c>POST fonte-dados</c>.</summary>
+    [HttpGet("fonte-dados")]
+    public ActionResult<FonteDadosAtualDto> GetFonteDados()
+    {
+        bool sqlite = _dataSource.UsandoSqlite;
+        return Ok(new FonteDadosAtualDto(
+            sqlite ? "sqlite" : "postgres",
+            sqlite ? Path.GetFileName(_dataSource.CaminhoSqliteAtivo!) : null));
+    }
+
+    /// <summary>
+    /// Define o arquivo SQLite usado por toda a API (lançamentos, categorias, chat/agente).
+    /// Caminho absoluto no servidor (ex.: retorno de <c>upload-sqlite</c>). Corpo vazio ou <c>caminhoSqlite</c> vazio volta ao PostgreSQL.
+    /// </summary>
+    [HttpPost("fonte-dados")]
+    public async Task<ActionResult<object>> DefinirFonteDados([FromBody] FonteDadosRequestDto? body)
+    {
+        if (body == null)
+        {
+            return BadRequest(new { mensagem = "Informe o corpo JSON (use caminhoSqlite vazio para PostgreSQL)." });
+        }
+
+        if (string.IsNullOrWhiteSpace(body.CaminhoSqlite))
+        {
+            _dataSource.DefinirPostgres();
+            return Ok(new
+            {
+                mensagem = "Fonte de dados: PostgreSQL (ConnectionStrings:DefaultConnection).",
+                modo = "postgres",
+            });
+        }
+
+        ConexaoStatusDto teste = await _manutencao.TestarConexaoSqliteAsync(body.CaminhoSqlite);
+        if (!teste.Conectado)
+        {
+            return BadRequest(teste);
+        }
+
+        _dataSource.DefinirSqlite(body.CaminhoSqlite);
+        return Ok(new
+        {
+            mensagem =
+                "Fonte de dados: SQLite. Consultas e agente usam este arquivo até você voltar ao PostgreSQL.",
+            modo = "sqlite",
+            arquivo = Path.GetFileName(_dataSource.CaminhoSqliteAtivo!),
+            caminhoSqlite = _dataSource.CaminhoSqliteAtivo,
+        });
     }
 
     [HttpGet("anthropic-api-key/status")]
@@ -119,12 +171,15 @@ public sealed class ManutencaoController : ControllerBase
             ["fatura_cartao"] = await _db.FaturasCartao.CountAsync(cancellationToken),
         };
 
+        bool sqlite = _dataSource.UsandoSqlite;
         ManutencaoStatusDto status = new ManutencaoStatusDto(
             totalLancamentos,
             dataMaisRecenteMs,
             dataFormatada,
             totais,
-            _importacaoState.UltimaImportacaoUtc);
+            _importacaoState.UltimaImportacaoUtc,
+            sqlite ? "sqlite" : "postgres",
+            sqlite ? Path.GetFileName(_dataSource.CaminhoSqliteAtivo!) : null);
 
         return Ok(status);
     }
@@ -134,7 +189,8 @@ public sealed class ManutencaoController : ControllerBase
     [RequestSizeLimit(TamanhoMaximoUploadBytes)]
     public async Task<ActionResult<UploadSqliteResponseDto>> UploadSqlite(
         IFormFile? file,
-        CancellationToken cancellationToken)
+        [FromQuery] bool usarComoFonteDados = false,
+        CancellationToken cancellationToken = default)
     {
         if (file == null || file.Length == 0)
         {
@@ -201,6 +257,11 @@ public sealed class ManutencaoController : ControllerBase
             }
 
             return BadRequest(new { mensagem = teste.Mensagem ?? "Arquivo não é um banco SQLite válido." });
+        }
+
+        if (usarComoFonteDados)
+        {
+            _dataSource.DefinirSqlite(caminhoCompleto);
         }
 
         return Ok(new UploadSqliteResponseDto(caminhoCompleto));

@@ -11,6 +11,7 @@ using FinTrackAI.Infrastructure.Data;
 using FinTrackAI.Infrastructure.Repositories;
 using FinTrackAI.Infrastructure.Services;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -48,8 +49,25 @@ builder.Services.Configure<AnthropicSettings>(
     builder.Configuration.GetSection(AnthropicSettings.SectionName));
 
 string? connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-builder.Services.AddDbContext<FinTrackDbContext>(options =>
-    options.UseNpgsql(connectionString));
+builder.Services.AddSingleton<DataSourceState>();
+builder.Services.AddDbContext<FinTrackDbContext>(
+    (sp, options) =>
+    {
+        DataSourceState fonte = sp.GetRequiredService<DataSourceState>();
+        string? sqlite = fonte.CaminhoSqliteAtivo;
+        if (!string.IsNullOrWhiteSpace(sqlite))
+        {
+            SqliteConnectionStringBuilder sqliteCs = new() { DataSource = sqlite };
+            options.UseSqlite(sqliteCs.ConnectionString);
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(connectionString))
+                throw new InvalidOperationException(
+                    "Configure ConnectionStrings:DefaultConnection ou defina um SQLite com POST /api/Manutencao/fonte-dados.");
+            options.UseNpgsql(connectionString);
+        }
+    });
 
 builder.Services.AddScoped<ILancamentoRepository, LancamentoRepository>();
 builder.Services.AddScoped<ICategoriaRepository, CategoriaRepository>();

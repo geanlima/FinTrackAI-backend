@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Text;
 using FinTrackAI.Domain.Interfaces.Services;
-using FinTrackAI.Infrastructure.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -100,18 +99,15 @@ public sealed class ManutencaoService : IManutencaoService
     private readonly IConfiguration _configuration;
     private readonly ILogger<ManutencaoService> _logger;
     private readonly ImportacaoState _importacaoState;
-    private readonly FinTrackDbContext _db;
 
     public ManutencaoService(
         IConfiguration configuration,
         ILogger<ManutencaoService> logger,
-        ImportacaoState importacaoState,
-        FinTrackDbContext db)
+        ImportacaoState importacaoState)
     {
         _configuration = configuration;
         _logger = logger;
         _importacaoState = importacaoState;
-        _db = db;
     }
 
     private static Dictionary<string, object> CriarMapaSubstituirNullNaMigracao()
@@ -341,17 +337,29 @@ public sealed class ManutencaoService : IManutencaoService
 
     public async Task<ConexaoStatusDto> TestarConexaoPostgresAsync(CancellationToken cancellationToken = default)
     {
+        string? connectionString = _configuration.GetConnectionString("DefaultConnection");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            return new ConexaoStatusDto(false, "ConnectionStrings:DefaultConnection não configurada.");
+        }
+
         try
         {
-            bool ok = await _db.Database.CanConnectAsync(cancellationToken);
-            if (!ok)
+            await using NpgsqlConnection conn = new NpgsqlConnection(connectionString);
+            await conn.OpenAsync(cancellationToken);
+            await using (NpgsqlCommand cmd = new NpgsqlCommand("SELECT 1", conn))
             {
-                return new ConexaoStatusDto(false, "Não foi possível conectar ao PostgreSQL.");
+                await cmd.ExecuteScalarAsync(cancellationToken);
             }
 
-            await _db.Database.ExecuteSqlRawAsync("SELECT 1", cancellationToken);
-
-            int totalLancamentos = await _db.Lancamentos.CountAsync(cancellationToken);
+            int totalLancamentos;
+            await using (NpgsqlCommand cmdCount = new NpgsqlCommand(
+                             "SELECT COUNT(*) FROM lancamentos",
+                             conn))
+            {
+                object? n = await cmdCount.ExecuteScalarAsync(cancellationToken);
+                totalLancamentos = n is long l ? (int)l : Convert.ToInt32(n, System.Globalization.CultureInfo.InvariantCulture);
+            }
 
             return new ConexaoStatusDto(
                 true,
