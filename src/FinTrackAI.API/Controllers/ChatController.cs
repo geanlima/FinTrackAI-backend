@@ -1,6 +1,8 @@
+using System.Net.Http;
 using System.Text.Json;
 using FinTrackAI.Application.DTOs;
 using FinTrackAI.Application.UseCases.Chat;
+using FinTrackAI.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FinTrackAI.API.Controllers;
@@ -15,10 +17,12 @@ public sealed class ChatController : ControllerBase
     };
 
     private readonly EnviarMensagemUseCase _enviarMensagem;
+    private readonly IPythonAgentService _pythonAgentService;
 
-    public ChatController(EnviarMensagemUseCase enviarMensagem)
+    public ChatController(EnviarMensagemUseCase enviarMensagem, IPythonAgentService pythonAgentService)
     {
         _enviarMensagem = enviarMensagem;
+        _pythonAgentService = pythonAgentService;
     }
 
     /// <summary>
@@ -37,14 +41,42 @@ public sealed class ChatController : ControllerBase
         Response.Headers.Connection = "keep-alive";
         Response.Headers["X-Accel-Buffering"] = "no";
 
+        int mes = body.Mes ?? DateTime.Now.Month;
+        int ano = body.Ano ?? DateTime.Now.Year;
+        body.Historico ??= new List<ChatHistoricoDto>();
+        List<ChatHistoricoItem> historico = new List<ChatHistoricoItem>();
+        foreach (ChatHistoricoDto item in body.Historico)
+        {
+            historico.Add(new ChatHistoricoItem(item.ResolveRole(), item.ResolveContent()));
+        }
+
+        string usuarioId = string.IsNullOrWhiteSpace(body.UsuarioId) ? "default" : body.UsuarioId;
+
         try
         {
-            await foreach (string chunk in _enviarMensagem.Execute(body, cancellationToken).WithCancellation(cancellationToken))
+            try
             {
-                string linha = "data: " + JsonSerializer.Serialize(chunk, SerializerOptions) + "\n\n";
-                await Response.WriteAsync(linha, cancellationToken);
-                await Response.Body.FlushAsync(cancellationToken);
+                await foreach (string evento in _pythonAgentService
+                                   .ChatAsync(body.Mensagem, historico, usuarioId, mes, ano, cancellationToken)
+                                   .WithCancellation(cancellationToken))
+                {
+                    await Response.WriteAsync("data: " + evento + "\n\n", cancellationToken);
+                    await Response.Body.FlushAsync(cancellationToken);
+                }
             }
+            catch (HttpRequestException)
+            {
+                await foreach (string chunk in _enviarMensagem.Execute(body, cancellationToken)
+                                   .WithCancellation(cancellationToken))
+                {
+                    string linha = "data: " + JsonSerializer.Serialize(chunk, SerializerOptions) + "\n\n";
+                    await Response.WriteAsync(linha, cancellationToken);
+                    await Response.Body.FlushAsync(cancellationToken);
+                }
+            }
+
+            await Response.WriteAsync("data: [DONE]\n\n", cancellationToken);
+            await Response.Body.FlushAsync(cancellationToken);
         }
         catch (Exception ex)
         {

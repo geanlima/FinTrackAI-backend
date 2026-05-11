@@ -10,6 +10,27 @@ services:
       - "5434:5432"
     volumes:
       - fintrack_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  agentes-python:
+    build:
+      context: ../vox-finance-ia-agentes
+      dockerfile: Dockerfile
+    container_name: vox_agentes_python
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      SERPER_API_KEY: ${SERPER_API_KEY}
+      POSTGRES_URL: postgresql://postgres:postgres@postgres:5432/fintrack
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   fintrack_pgdata:

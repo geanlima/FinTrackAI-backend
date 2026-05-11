@@ -2,8 +2,17 @@ namespace FinTrackAI.Application.DTOs;
 
 public sealed record IntegracaoRequestDto(string? CaminhoSqlite);
 
-/// <summary>Define a fonte de leitura da API e do agente. <c>caminhoSqlite</c> vazio ou ausente volta ao PostgreSQL.</summary>
-public sealed record FonteDadosRequestDto(string? CaminhoSqlite);
+/// <summary>
+/// Define a fonte de leitura da API e do agente.
+/// <list type="bullet">
+/// <item><description><c>usarSqliteConfiguradoNoServidor: true</c> — usa <c>Manutencao:CaminhoSqliteServidor</c> no servidor (sem enviar arquivo nem caminho pelo app).</description></item>
+/// <item><description><c>caminhoSqlite</c> preenchido — caminho absoluto no servidor (fluxo avançado).</description></item>
+/// <item><description>Ambos falsos/vazios — volta ao PostgreSQL.</description></item>
+/// </list>
+/// </summary>
+public sealed record FonteDadosRequestDto(
+    string? CaminhoSqlite = null,
+    bool UsarSqliteConfiguradoNoServidor = false);
 
 /// <summary>Caminho absoluto no servidor após <c>POST upload-sqlite</c>.</summary>
 public sealed record UploadSqliteResponseDto(string CaminhoSqlite);

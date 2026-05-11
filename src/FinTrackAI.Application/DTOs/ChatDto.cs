@@ -9,6 +9,15 @@ public sealed class ChatRequestDto
 
     [JsonPropertyName("historico")]
     public List<ChatHistoricoDto> Historico { get; set; } = new();
+
+    [JsonPropertyName("usuarioId")]
+    public string? UsuarioId { get; set; }
+
+    [JsonPropertyName("mes")]
+    public int? Mes { get; set; }
+
+    [JsonPropertyName("ano")]
+    public int? Ano { get; set; }
 }
 
 public sealed class ChatHistoricoDto

@@ -63,15 +63,43 @@ public sealed class ManutencaoController : ControllerBase
     }
 
     /// <summary>
-    /// Define o arquivo SQLite usado por toda a API (lançamentos, categorias, chat/agente).
-    /// Caminho absoluto no servidor (ex.: retorno de <c>upload-sqlite</c>). Corpo vazio ou <c>caminhoSqlite</c> vazio volta ao PostgreSQL.
+    /// Define a fonte de dados da API e do agente.
+    /// Para não enviar o .db pelo app: configure <c>Manutencao:CaminhoSqliteServidor</c> no servidor e envie
+    /// <c>{ "usarSqliteConfiguradoNoServidor": true }</c>.
     /// </summary>
     [HttpPost("fonte-dados")]
     public async Task<ActionResult<object>> DefinirFonteDados([FromBody] FonteDadosRequestDto? body)
     {
         if (body == null)
         {
-            return BadRequest(new { mensagem = "Informe o corpo JSON (use caminhoSqlite vazio para PostgreSQL)." });
+            return BadRequest(new { mensagem = "Informe o corpo JSON." });
+        }
+
+        if (body.UsarSqliteConfiguradoNoServidor)
+        {
+            string? caminhoCfg = _configuration["Manutencao:CaminhoSqliteServidor"]?.Trim();
+            if (string.IsNullOrWhiteSpace(caminhoCfg))
+            {
+                return BadRequest(new
+                {
+                    mensagem =
+                        "Defina Manutencao:CaminhoSqliteServidor no appsettings ou a variável Manutencao__CaminhoSqliteServidor no ambiente (caminho absoluto do .db no servidor).",
+                });
+            }
+
+            ConexaoStatusDto teste = await _manutencao.TestarConexaoSqliteAsync(caminhoCfg);
+            if (!teste.Conectado)
+            {
+                return BadRequest(teste);
+            }
+
+            _dataSource.DefinirSqlite(caminhoCfg);
+            return Ok(new
+            {
+                mensagem = "Fonte de dados: SQLite (caminho configurado apenas no servidor).",
+                modo = "sqlite",
+                arquivo = Path.GetFileName(_dataSource.CaminhoSqliteAtivo!),
+            });
         }
 
         if (string.IsNullOrWhiteSpace(body.CaminhoSqlite))
@@ -84,10 +112,10 @@ public sealed class ManutencaoController : ControllerBase
             });
         }
 
-        ConexaoStatusDto teste = await _manutencao.TestarConexaoSqliteAsync(body.CaminhoSqlite);
-        if (!teste.Conectado)
+        ConexaoStatusDto testeCaminho = await _manutencao.TestarConexaoSqliteAsync(body.CaminhoSqlite);
+        if (!testeCaminho.Conectado)
         {
-            return BadRequest(teste);
+            return BadRequest(testeCaminho);
         }
 
         _dataSource.DefinirSqlite(body.CaminhoSqlite);

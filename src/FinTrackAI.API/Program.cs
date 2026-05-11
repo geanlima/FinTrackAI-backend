@@ -86,6 +86,7 @@ builder.Services.AddScoped<AnthropicClient>(sp =>
 });
 
 builder.Services.AddScoped<IAgentService, AgentService>();
+builder.Services.AddHttpClient<IPythonAgentService, PythonAgentService>();
 
 builder.Services.AddSingleton<ImportacaoState>();
 builder.Services.AddSingleton<AnthropicApiKeyState>();
