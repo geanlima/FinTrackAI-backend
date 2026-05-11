@@ -17,6 +17,11 @@ using Microsoft.Extensions.Options;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = 104_857_600; // 100 MB — importar SQLite
+});
+
 // ANTHROPIC_API_KEY (comum em PaaS) não mapeia sozinho para a seção Anthropic:ApiKey.
 if (string.IsNullOrWhiteSpace(builder.Configuration["Anthropic:ApiKey"]))
 {
@@ -31,7 +36,7 @@ builder.Services.AddSwaggerGen();
 
 builder.Services.Configure<FormOptions>(options =>
 {
-    options.MultipartBodyLengthLimit = 52_428_800;
+    options.MultipartBodyLengthLimit = 104_857_600; // 100 MB (importar SQLite)
 });
 
 string[]? configuredOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>();

@@ -2,13 +2,22 @@ namespace FinTrackAI.Domain.Interfaces.Services;
 
 public interface IManutencaoService
 {
-    Task<ConexaoStatusDto> TestarConexaoSqliteAsync(string caminho);
+    Task<ConexaoStatusDto> TestarConexaoSqliteAsync(string caminho, bool ignorarLimiteTamanho = false);
 
     Task<ConexaoStatusDto> TestarConexaoPostgresAsync(CancellationToken cancellationToken = default);
 
     Task<IntegracaoResultadoDto> ExecutarIntegracaoAsync(
         string caminhoSqlite,
         Func<LogEventoDto, Task> onLog,
+        CancellationToken cancellationToken = default,
+        bool ignorarLimiteTamanhoSqlite = false);
+
+    /// <summary>
+    /// Mesma migração que <see cref="ExecutarIntegracaoAsync"/>, com callback de log em tuplas (SSE simples).
+    /// </summary>
+    Task<IntegracaoResultadoDto> ImportarSqliteAsync(
+        string caminhoSqlite,
+        Func<string, string, string?, int?, Task> onLog,
         CancellationToken cancellationToken = default);
 }
 

@@ -13,6 +13,8 @@ public sealed class ManutencaoService : IManutencaoService
 {
     private const long TamanhoMaximoBytes = 52_428_800;
 
+    private const long TamanhoMaximoImportacaoBytes = 104_857_600;
+
     private static readonly byte[] CabecalhoSqlite = "SQLite format 3\0"u8.ToArray();
 
     private static readonly string[] OrdemLimpeza =
@@ -268,7 +270,7 @@ public sealed class ManutencaoService : IManutencaoService
         && t[1] == ':'
         && (t[2] == '\\' || t[2] == '/');
 
-    public async Task<ConexaoStatusDto> TestarConexaoSqliteAsync(string caminho)
+    public async Task<ConexaoStatusDto> TestarConexaoSqliteAsync(string caminho, bool ignorarLimiteTamanho = false)
     {
         if (!TryNormalizarCaminhoSqlite(caminho, out string caminhoCompleto, out string? erroNormalizacao))
         {
@@ -280,9 +282,13 @@ public sealed class ManutencaoService : IManutencaoService
         }
 
         FileInfo info = new FileInfo(caminhoCompleto);
-        if (info.Length > TamanhoMaximoBytes)
+        long limite = ignorarLimiteTamanho ? TamanhoMaximoImportacaoBytes : TamanhoMaximoBytes;
+        if (info.Length > limite)
         {
-            return new ConexaoStatusDto(false, "Arquivo excede o limite de 50 MB.");
+            string msg = ignorarLimiteTamanho
+                ? $"Arquivo excede o limite de {TamanhoMaximoImportacaoBytes / 1_048_576} MB."
+                : "Arquivo excede o limite de 50 MB.";
+            return new ConexaoStatusDto(false, msg);
         }
 
         string ext = Path.GetExtension(caminhoCompleto);
@@ -376,17 +382,33 @@ public sealed class ManutencaoService : IManutencaoService
         }
     }
 
+    public async Task<IntegracaoResultadoDto> ImportarSqliteAsync(
+        string caminhoSqlite,
+        Func<string, string, string?, int?, Task> onLog,
+        CancellationToken cancellationToken = default)
+    {
+        async Task Adapt(LogEventoDto dto) =>
+            await onLog(dto.Nivel, dto.Mensagem, dto.Tabela, dto.Registros);
+
+        return await ExecutarIntegracaoAsync(
+            caminhoSqlite,
+            Adapt,
+            cancellationToken,
+            ignorarLimiteTamanhoSqlite: true);
+    }
+
     public async Task<IntegracaoResultadoDto> ExecutarIntegracaoAsync(
         string caminhoSqlite,
         Func<LogEventoDto, Task> onLog,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool ignorarLimiteTamanhoSqlite = false)
     {
         Stopwatch sw = Stopwatch.StartNew();
         Dictionary<string, int> registrosPorTabela = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         List<string> erros = new List<string>();
 
         await onLog(new LogEventoDto("info", "Validando banco SQLite..."));
-        ConexaoStatusDto statusSqlite = await TestarConexaoSqliteAsync(caminhoSqlite);
+        ConexaoStatusDto statusSqlite = await TestarConexaoSqliteAsync(caminhoSqlite, ignorarLimiteTamanhoSqlite);
         if (!statusSqlite.Conectado)
         {
             await onLog(new LogEventoDto("erro", statusSqlite.Mensagem));
@@ -471,10 +493,13 @@ public sealed class ManutencaoService : IManutencaoService
                 {
                     int count = await MigrarTabelaAsync(sqliteConn, pg, tabela, cancellationToken);
                     registrosPorTabela[tabela] = count;
+                    string msgMigracao = count > 0
+                        ? $"{tabela}: {count} registro(s) migrados."
+                        : $"{tabela}: sem registros.";
                     await onLog(
                         new LogEventoDto(
                             "sucesso",
-                            "Tabela migrada com sucesso",
+                            msgMigracao,
                             Tabela: tabela,
                             Registros: count));
                 }
@@ -496,10 +521,11 @@ public sealed class ManutencaoService : IManutencaoService
             sw.Stop();
             int total = registrosPorTabela.Values.Sum();
             bool sucesso = erros.Count == 0;
+            string nivelFinal = sucesso ? "sucesso" : "aviso";
             await onLog(
                 new LogEventoDto(
-                    "sucesso",
-                    $"Integração concluída! {total} registros em {sw.Elapsed.TotalSeconds:F1}s"));
+                    nivelFinal,
+                    $"Migração concluída! {total} registros em {sw.Elapsed.TotalSeconds:F1}s"));
 
             if (sucesso)
             {

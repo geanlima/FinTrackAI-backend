@@ -17,6 +17,8 @@ public sealed class ManutencaoController : ControllerBase
 {
     private const long TamanhoMaximoUploadBytes = 52_428_800;
 
+    private const long TamanhoMaximoImportacaoSqliteBytes = 104_857_600;
+
     private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -293,6 +295,111 @@ public sealed class ManutencaoController : ControllerBase
         }
 
         return Ok(new UploadSqliteResponseDto(caminhoCompleto));
+    }
+
+    /// <summary>
+    /// Envia um arquivo SQLite (.db / .sqlite) e substitui os dados do PostgreSQL pelos do arquivo.
+    /// Resposta em SSE: eventos JSON com nivel, mensagem, tabela, registros, timestamp; ao final <c>tipo: resultado</c> e <c>[DONE]</c>.
+    /// </summary>
+    [HttpPost("importar-sqlite")]
+    [RequestSizeLimit(TamanhoMaximoImportacaoSqliteBytes)]
+    [Consumes("multipart/form-data")]
+    public async Task ImportarSqlite(IFormFile? arquivo, CancellationToken cancellationToken)
+    {
+        Response.ContentType = "text/event-stream; charset=utf-8";
+        Response.Headers.CacheControl = "no-cache";
+        Response.Headers.Connection = "keep-alive";
+        Response.Headers["X-Accel-Buffering"] = "no";
+
+        async Task EnviarLog(string nivel, string mensagem, string? tabela = null, int? registros = null)
+        {
+            object evento = new
+            {
+                nivel,
+                mensagem,
+                tabela,
+                registros,
+                timestamp = DateTime.Now.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
+            };
+            await Response.WriteAsync(
+                "data: " + JsonSerializer.Serialize(evento, JsonOptions) + "\n\n",
+                cancellationToken);
+            await Response.Body.FlushAsync(cancellationToken);
+        }
+
+        if (arquivo == null || arquivo.Length == 0)
+        {
+            await EnviarLog("erro", "Nenhum arquivo enviado.");
+            await Response.WriteAsync("data: [DONE]\n\n", cancellationToken);
+            await Response.Body.FlushAsync(cancellationToken);
+            return;
+        }
+
+        if (arquivo.Length > TamanhoMaximoImportacaoSqliteBytes)
+        {
+            await EnviarLog("erro", "Arquivo excede o limite de 100 MB.");
+            await Response.WriteAsync("data: [DONE]\n\n", cancellationToken);
+            await Response.Body.FlushAsync(cancellationToken);
+            return;
+        }
+
+        string extensao = Path.GetExtension(arquivo.FileName).ToLowerInvariant();
+        if (extensao != ".db" && extensao != ".sqlite")
+        {
+            await EnviarLog("erro", "Arquivo inválido. Envie um arquivo .db ou .sqlite.");
+            await Response.WriteAsync("data: [DONE]\n\n", cancellationToken);
+            await Response.Body.FlushAsync(cancellationToken);
+            return;
+        }
+
+        string caminhoTemp = Path.Combine(Path.GetTempPath(), $"import_{Guid.NewGuid():N}.db");
+        try
+        {
+            await using (FileStream stream = new FileStream(
+                             caminhoTemp,
+                             FileMode.Create,
+                             FileAccess.Write,
+                             FileShare.None,
+                             bufferSize: 81920,
+                             useAsync: true))
+            {
+                await arquivo.CopyToAsync(stream, cancellationToken);
+            }
+
+            IntegracaoResultadoDto resultado =
+                await _manutencao.ImportarSqliteAsync(caminhoTemp, EnviarLog, cancellationToken);
+
+            object dadosResultado = new
+            {
+                sucesso = resultado.Sucesso,
+                totalRegistros = resultado.TotalRegistros,
+                registrosPorTabela = resultado.RegistrosPorTabela,
+                erros = resultado.Erros,
+                tempoSegundos = resultado.TempoSegundos,
+            };
+            object envelope = new { tipo = "resultado", dados = dadosResultado };
+            await Response.WriteAsync(
+                "data: " + JsonSerializer.Serialize(envelope, JsonOptions) + "\n\n",
+                cancellationToken);
+            await Response.Body.FlushAsync(cancellationToken);
+        }
+        finally
+        {
+            if (System.IO.File.Exists(caminhoTemp))
+            {
+                try
+                {
+                    System.IO.File.Delete(caminhoTemp);
+                }
+                catch
+                {
+                    // ignorar
+                }
+            }
+        }
+
+        await Response.WriteAsync("data: [DONE]\n\n", cancellationToken);
+        await Response.Body.FlushAsync(cancellationToken);
     }
 
     [HttpPost("integrar")]
