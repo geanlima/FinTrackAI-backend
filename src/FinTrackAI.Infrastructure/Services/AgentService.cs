@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Anthropic.SDK;
 using Anthropic.SDK.Common;
@@ -11,6 +12,8 @@ namespace FinTrackAI.Infrastructure.Services;
 
 public sealed class AgentService : IAgentService
 {
+    private const int HistoricoMaxMensagens = 6;
+
     private readonly AnthropicClient _client;
     private readonly FinanceiroQueryService _financeiro;
     private readonly AnthropicSettings _settings;
@@ -40,9 +43,17 @@ public sealed class AgentService : IAgentService
             yield break;
         }
 
+        string complexidade = await ClassificarComplexidadeAsync(request.Mensagem, cancellationToken);
+        string modelo = SelecionarModelo(complexidade);
+        int maxTokens = MaxTokensPara(complexidade);
+
+        DateTime hoje = DateTime.Now;
+        string systemPrompt = MontarSystemPrompt(hoje);
+
         List<Anthropic.SDK.Common.Tool> tools = CriarFerramentas(cancellationToken);
         List<Message> messages = new List<Message>();
-        foreach (ChatHistoricoItem item in request.Historico)
+        IReadOnlyList<ChatHistoricoItem> historicoLimitado = LimitarHistorico(request.Historico, HistoricoMaxMensagens);
+        foreach (ChatHistoricoItem item in historicoLimitado)
         {
             RoleType role = item.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase)
                 ? RoleType.Assistant
@@ -52,75 +63,68 @@ public sealed class AgentService : IAgentService
 
         messages.Add(new Message(RoleType.User, request.Mensagem));
 
-        DateTime hoje = DateTime.Now;
-        string systemPrompt = $"""
-            Você é o FinTrack AI, um assistente financeiro pessoal inteligente.
-
-            CONTEXTO TEMPORAL:
-            - Hoje é {hoje:dd/MM/yyyy}
-            - Mês atual: {hoje.Month}
-            - Ano atual: {hoje.Year}
-            - Quando o usuário disser "esse mês" ou "mês atual", use mês={hoje.Month} e ano={hoje.Year}
-            - Quando disser "mês passado", use mês={hoje.AddMonths(-1).Month} e ano={hoje.AddMonths(-1).Year}
-
-            REGRAS:
-            - Sempre use as ferramentas para buscar dados reais antes de responder
-            - Responda sempre em português brasileiro
-            - Formate valores como R$ X.XXX,XX
-            - Nunca invente dados — use apenas o que as ferramentas retornam
-            - Se não encontrar dados, diga claramente
-            - NÃO peça confirmação de período quando o usuário disser "esse mês" — use o mês atual diretamente
-
-            FERRAMENTAS DISPONÍVEIS:
-            - BuscarLancamentosPorPeriodo: busca transações num período
-            - CalcularTotalPorCategoria: agrupa gastos por categoria
-            - GetResumoMensal: resumo financeiro do mês
-            - GetContasPagarPendentes: contas em aberto
-            - GetGastosPorFormaPagamento: gastos por forma de pagamento
-            - GetMaiorGasto: maior gasto do período
-            """;
-
         MessageParameters parameters = new MessageParameters
         {
-            Model = _settings.Model,
-            MaxTokens = _settings.MaxTokens,
-            Stream = false,
+            Model = modelo,
+            MaxTokens = maxTokens,
+            Stream = true,
             Temperature = 1.0m,
             Messages = messages,
             Tools = tools,
             System = new List<SystemMessage> { new SystemMessage(systemPrompt) },
+            PromptCaching = PromptCacheType.AutomaticToolsAndSystem,
         };
 
         int segurancaIteracoes = 0;
         while (segurancaIteracoes < 12)
         {
             segurancaIteracoes++;
-            MessageResponse? result = null;
-            string? erroAnthropic = null;
-            try
+            parameters.Messages = messages;
+
+            List<MessageResponse> streamOutputs = new List<MessageResponse>();
+            await foreach (
+                MessageResponse res in _client.Messages.StreamClaudeMessageAsync(parameters)
+                    .WithCancellation(cancellationToken))
             {
-                result = await _client.Messages.GetClaudeMessageAsync(parameters, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                erroAnthropic = ex.Message;
+                if (res.Delta?.Text is { Length: > 0 } deltaText)
+                {
+                    yield return deltaText;
+                }
+
+                streamOutputs.Add(res);
             }
 
-            if (erroAnthropic != null)
+            if (streamOutputs.Count == 0)
             {
-                yield return
-                    "Erro ao chamar a API Anthropic: "
-                    + erroAnthropic
-                    + ". Confira ANTHROPIC_API_KEY, conexão e o modelo configurado (Anthropic:Model).";
                 yield break;
             }
 
-            messages.Add(result!.Message);
+            messages.Add(new Message(streamOutputs));
             parameters.Messages = messages;
 
-            if (result.ToolCalls != null && result.ToolCalls.Count > 0)
+            bool temToolCalls = false;
+            foreach (MessageResponse o in streamOutputs)
             {
-                foreach (dynamic toolCall in result.ToolCalls)
+                if (o.ToolCalls is { Count: > 0 })
+                {
+                    temToolCalls = true;
+                    break;
+                }
+            }
+
+            if (!temToolCalls)
+            {
+                yield break;
+            }
+
+            foreach (MessageResponse o in streamOutputs)
+            {
+                if (o.ToolCalls == null || o.ToolCalls.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (dynamic toolCall in o.ToolCalls)
                 {
                     string saida;
                     try
@@ -134,21 +138,135 @@ public sealed class AgentService : IAgentService
 
                     messages.Add(new Message(toolCall, saida));
                 }
-
-                parameters.Messages = messages;
-                continue;
             }
 
-            string textoFinal = ExtrairTextoAssistant(result.Message);
-            foreach (string chunk in DividirTexto(textoFinal, 120))
-            {
-                yield return chunk;
-            }
-
-            yield break;
+            parameters.Messages = messages;
         }
 
         yield return "Não foi possível concluir a resposta do assistente (limite de iterações com ferramentas).";
+    }
+
+    private static IReadOnlyList<ChatHistoricoItem> LimitarHistorico(
+        IReadOnlyList<ChatHistoricoItem> historico,
+        int maxMensagens)
+    {
+        if (historico.Count <= maxMensagens)
+        {
+            return historico;
+        }
+
+        return historico.Skip(historico.Count - maxMensagens).ToList();
+    }
+
+    private string ResolverModeloSimples() =>
+        !string.IsNullOrWhiteSpace(_settings.ModelSimples) ? _settings.ModelSimples! : _settings.Model;
+
+    private string ResolverModeloMedio() =>
+        !string.IsNullOrWhiteSpace(_settings.ModelMedio) ? _settings.ModelMedio! : ResolverModeloSimples();
+
+    private string ResolverModeloComplexo() =>
+        !string.IsNullOrWhiteSpace(_settings.ModelComplexo) ? _settings.ModelComplexo! : ResolverModeloSimples();
+
+    private string SelecionarModelo(string complexidade) =>
+        complexidade switch
+        {
+            "complexo" => ResolverModeloComplexo(),
+            "medio" => ResolverModeloMedio(),
+            _ => ResolverModeloSimples(),
+        };
+
+    private int MaxTokensPara(string complexidade)
+    {
+        return complexidade switch
+        {
+            "complexo" when _settings.MaxTokensComplexo > 0 => _settings.MaxTokensComplexo,
+            "medio" when _settings.MaxTokensMedio > 0 => _settings.MaxTokensMedio,
+            _ when _settings.MaxTokensSimples > 0 => _settings.MaxTokensSimples,
+            _ => _settings.MaxTokens > 0 ? _settings.MaxTokens : 512,
+        };
+    }
+
+    private async Task<string> ClassificarComplexidadeAsync(string pergunta, CancellationToken cancellationToken)
+    {
+        string modelo = string.IsNullOrWhiteSpace(_settings.ModelClassifier)
+            ? ResolverModeloSimples()
+            : _settings.ModelClassifier.Trim();
+
+        string prompt =
+            """
+            Classifique a complexidade desta pergunta financeira.
+            Responda APENAS com uma palavra: simples, medio ou complexo
+
+            simples: consulta direta (saldo, gasto de uma categoria, listar transações)
+            medio: análise ou comparação (gastos por período, tendências, resumos)
+            complexo: planejamento financeiro, projeções, decisões estratégicas, múltiplos cenários
+
+            Pergunta:
+            """
+            + pergunta;
+
+        MessageParameters p = new MessageParameters
+        {
+            Model = modelo,
+            MaxTokens = 24,
+            Stream = false,
+            Temperature = 0m,
+            Messages = new List<Message> { new Message(RoleType.User, prompt) },
+        };
+
+        try
+        {
+            MessageResponse res = await _client.Messages.GetClaudeMessageAsync(p, cancellationToken);
+            string texto = ExtrairTextoAssistant(res.Message).Trim().ToLowerInvariant();
+            if (texto.Contains("complexo", StringComparison.Ordinal))
+            {
+                return "complexo";
+            }
+
+            if (texto.Contains("medio", StringComparison.Ordinal)
+                || texto.Contains("médio", StringComparison.Ordinal))
+            {
+                return "medio";
+            }
+
+            return "simples";
+        }
+        catch
+        {
+            return "simples";
+        }
+    }
+
+    private static string MontarSystemPrompt(DateTime hoje)
+    {
+        int mes = hoje.Month;
+        int ano = hoje.Year;
+
+        return $"""
+            Você é o FinTrack AI, assistente financeiro pessoal do app Vox Finance.
+
+            CONTEXTO TEMPORAL:
+            - Hoje: {hoje:dd/MM/yyyy}
+            - Mês atual: {mes}/{ano}
+            - "esse mês" = mês {mes}, ano {ano}
+            - "mês passado" = mês {hoje.AddMonths(-1).Month}, ano {hoje.AddMonths(-1).Year}
+
+            REGRAS:
+            - Use as ferramentas para buscar dados reais antes de responder
+            - Responda em português brasileiro
+            - Formate valores como R$ X.XXX,XX
+            - Nunca invente dados — use apenas o que as ferramentas retornam
+            - NÃO peça confirmação de período quando o usuário disser "esse mês"
+            - Para dicas de investimento, mencione que não é recomendação profissional
+
+            FERRAMENTAS DISPONÍVEIS:
+            - BuscarLancamentosPorPeriodo: busca transações num período
+            - CalcularTotalPorCategoria: agrupa gastos por categoria com subcategorias
+            - GetResumoMensal: resumo financeiro do mês (receitas, despesas, saldo)
+            - GetContasPagarPendentes: contas em aberto com vencimento
+            - GetGastosPorFormaPagamento: gastos por forma de pagamento
+            - GetMaiorGasto: maior gasto do período
+            """;
     }
 
     private List<Anthropic.SDK.Common.Tool> CriarFerramentas(CancellationToken cancellationToken)
@@ -210,7 +328,7 @@ public sealed class AgentService : IAgentService
             return string.Empty;
         }
 
-        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        StringBuilder sb = new StringBuilder();
         foreach (object bloco in message.Content)
         {
             if (bloco is TextContent tc && !string.IsNullOrEmpty(tc.Text))
@@ -225,22 +343,5 @@ public sealed class AgentService : IAgentService
         }
 
         return message.ToString();
-    }
-
-    private static IEnumerable<string> DividirTexto(string texto, int tamanhoMaximo)
-    {
-        if (string.IsNullOrEmpty(texto))
-        {
-            yield return string.Empty;
-            yield break;
-        }
-
-        int i = 0;
-        while (i < texto.Length)
-        {
-            int len = Math.Min(tamanhoMaximo, texto.Length - i);
-            yield return texto.Substring(i, len);
-            i += len;
-        }
     }
 }
