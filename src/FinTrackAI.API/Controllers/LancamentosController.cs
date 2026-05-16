@@ -11,15 +11,18 @@ public sealed class LancamentosController : ControllerBase
     private readonly GetLancamentosByPeriodoUseCase _porPeriodo;
     private readonly GetResumoMensalUseCase _resumo;
     private readonly GetGastosPorCategoriaUseCase _gastosCategoria;
+    private readonly ILogger<LancamentosController> _logger;
 
     public LancamentosController(
         GetLancamentosByPeriodoUseCase porPeriodo,
         GetResumoMensalUseCase resumo,
-        GetGastosPorCategoriaUseCase gastosCategoria)
+        GetGastosPorCategoriaUseCase gastosCategoria,
+        ILogger<LancamentosController> logger)
     {
         _porPeriodo = porPeriodo;
         _resumo = resumo;
         _gastosCategoria = gastosCategoria;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -48,8 +51,18 @@ public sealed class LancamentosController : ControllerBase
             return BadRequest("Informe mes (1–12) e ano válidos na query string.");
         }
 
-        ResumoFinanceiroDto dto = await _resumo.ExecuteAsync(mes, ano, cancellationToken);
-        return Ok(dto);
+        try
+        {
+            ResumoFinanceiroDto dto = await _resumo.ExecuteAsync(mes, ano, cancellationToken);
+            return Ok(dto);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Falha ao obter resumo mensal {Mes}/{Ano}", mes, ano);
+            return StatusCode(
+                500,
+                new { mensagem = "Não foi possível calcular o resumo do período.", detalhe = ex.Message });
+        }
     }
 
     [HttpGet("gastos-por-categoria")]
@@ -63,8 +76,18 @@ public sealed class LancamentosController : ControllerBase
             return BadRequest("Informe mes (1–12) e ano válidos na query string.");
         }
 
-        IReadOnlyList<GastoCategoriaDto> lista =
-            await _gastosCategoria.ExecuteAsync(mes, ano, cancellationToken);
-        return Ok(lista);
+        try
+        {
+            IReadOnlyList<GastoCategoriaDto> lista =
+                await _gastosCategoria.ExecuteAsync(mes, ano, cancellationToken);
+            return Ok(lista);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Falha ao obter gastos por categoria {Mes}/{Ano}", mes, ano);
+            return StatusCode(
+                500,
+                new { mensagem = "Não foi possível listar gastos por categoria.", detalhe = ex.Message });
+        }
     }
 }

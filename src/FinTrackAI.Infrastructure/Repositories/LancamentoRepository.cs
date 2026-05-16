@@ -45,7 +45,12 @@ public sealed class LancamentoRepository : ILancamentoRepository
         (long inicioMs, long fimInclusivoMs) = IntervaloMes(mes, ano);
         List<(int IdCat, double Total)> grupos = await _db.Lancamentos
             .AsNoTracking()
-            .Where(l => EhDespesaGastoNoMes(l, inicioMs, fimInclusivoMs))
+            .Where(l =>
+                l.DataHora >= inicioMs
+                && l.DataHora <= fimInclusivoMs
+                && l.TipoMovimento == TipoDespesa
+                && l.Pago == PagoSim
+                && l.PagamentoFatura == 0)
             .GroupBy(l => l.IdCategoriaPersonalizada ?? 0)
             .Select(g => new ValueTuple<int, double>(g.Key, g.Sum(x => (double)x.Valor)))
             .ToListAsync(cancellationToken);
@@ -105,7 +110,12 @@ public sealed class LancamentoRepository : ILancamentoRepository
         // Gasto do mês: despesas pagas, fora de pagamento de fatura, no intervalo do mês (inclusive).
         double despesas = await _db.Lancamentos
             .AsNoTracking()
-            .Where(l => EhDespesaGastoNoMes(l, inicioMs, fimInclusivoMs))
+            .Where(l =>
+                l.DataHora >= inicioMs
+                && l.DataHora <= fimInclusivoMs
+                && l.TipoMovimento == TipoDespesa
+                && l.Pago == PagoSim
+                && l.PagamentoFatura == 0)
             .SumAsync(l => (double?)l.Valor, cancellationToken) ?? 0d;
         return (receitas, despesas, receitas - despesas);
     }
@@ -118,7 +128,12 @@ public sealed class LancamentoRepository : ILancamentoRepository
         (long inicioMs, long fimInclusivoMs) = IntervaloMes(mes, ano);
         List<(int FormaPagamento, double Total)> lista = await _db.Lancamentos
             .AsNoTracking()
-            .Where(l => EhDespesaGastoNoMes(l, inicioMs, fimInclusivoMs))
+            .Where(l =>
+                l.DataHora >= inicioMs
+                && l.DataHora <= fimInclusivoMs
+                && l.TipoMovimento == TipoDespesa
+                && l.Pago == PagoSim
+                && l.PagamentoFatura == 0)
             .GroupBy(l => l.FormaPagamento ?? 0)
             .Select(g => new ValueTuple<int, double>(g.Key, g.Sum(x => (double)x.Valor)))
             .ToListAsync(cancellationToken);
@@ -134,20 +149,15 @@ public sealed class LancamentoRepository : ILancamentoRepository
         (long inicioMs, long fimInclusivoMs) = IntervaloMes(mes, ano);
         return await _db.Lancamentos
             .AsNoTracking()
-            .Where(l => EhDespesaGastoNoMes(l, inicioMs, fimInclusivoMs))
+            .Where(l =>
+                l.DataHora >= inicioMs
+                && l.DataHora <= fimInclusivoMs
+                && l.TipoMovimento == TipoDespesa
+                && l.Pago == PagoSim
+                && l.PagamentoFatura == 0)
             .OrderByDescending(l => l.Valor)
             .FirstOrDefaultAsync(cancellationToken);
     }
-
-    /// <summary>
-    /// Despesa efetiva do mês: pago, não é pagamento de fatura, dentro do intervalo (início do mês até 23:59:59).
-    /// </summary>
-    private static bool EhDespesaGastoNoMes(Lancamento l, long inicioMs, long fimInclusivoMs) =>
-        l.DataHora >= inicioMs
-        && l.DataHora <= fimInclusivoMs
-        && l.TipoMovimento == TipoDespesa
-        && l.Pago == PagoSim
-        && l.PagamentoFatura == 0;
 
     /// <summary>
     /// Início do 1º dia 00:00:00 e fim do último dia 23:59:59 (local), em ms — alinhado ao app Vox.
