@@ -13,6 +13,7 @@ public sealed class LancamentoRepository : ILancamentoRepository
 {
     private const int TipoDespesa = 1;
     private const int TipoReceita = 2;
+    private const int PagoSim = 1;
 
     private readonly FinTrackDbContext _db;
     private readonly ILogger<LancamentoRepository> _logger;
@@ -41,14 +42,10 @@ public sealed class LancamentoRepository : ILancamentoRepository
         int ano,
         CancellationToken cancellationToken)
     {
-        (long inicioMs, long fimExclusivoMs) = IntervaloMes(mes, ano);
+        (long inicioMs, long fimInclusivoMs) = IntervaloMes(mes, ano);
         List<(int IdCat, double Total)> grupos = await _db.Lancamentos
             .AsNoTracking()
-            .Where(l =>
-                l.DataHora >= inicioMs
-                && l.DataHora < fimExclusivoMs
-                && l.TipoMovimento == TipoDespesa
-                && l.PagamentoFatura == 0)
+            .Where(l => EhDespesaGastoNoMes(l, inicioMs, fimInclusivoMs))
             .GroupBy(l => l.IdCategoriaPersonalizada ?? 0)
             .Select(g => new ValueTuple<int, double>(g.Key, g.Sum(x => (double)x.Valor)))
             .ToListAsync(cancellationToken);
@@ -76,10 +73,10 @@ public sealed class LancamentoRepository : ILancamentoRepository
         int ano,
         CancellationToken cancellationToken)
     {
-        (long inicioMs, long fimExclusivoMs) = IntervaloMes(mes, ano);
+        (long inicioMs, long fimInclusivoMs) = IntervaloMes(mes, ano);
 
         // Receitas: prioriza cadastro "Minha Renda" (fontes ativas). Se não houver valor cadastrado,
-        // usa lançamentos de receita no mês (exclui pagamento de fatura).
+        // usa lançamentos de receita no mês (pagos, exclui pagamento de fatura).
         double receitasFontes = 0d;
         try
         {
@@ -97,20 +94,18 @@ public sealed class LancamentoRepository : ILancamentoRepository
             .AsNoTracking()
             .Where(l =>
                 l.DataHora >= inicioMs
-                && l.DataHora < fimExclusivoMs
+                && l.DataHora <= fimInclusivoMs
                 && l.TipoMovimento == TipoReceita
+                && l.Pago == PagoSim
                 && l.PagamentoFatura == 0)
             .SumAsync(l => (double?)l.Valor, cancellationToken) ?? 0d;
 
         double receitas = receitasFontes > 0 ? receitasFontes : receitasLancamentos;
 
+        // Gasto do mês: despesas pagas, fora de pagamento de fatura, no intervalo do mês (inclusive).
         double despesas = await _db.Lancamentos
             .AsNoTracking()
-            .Where(l =>
-                l.DataHora >= inicioMs
-                && l.DataHora < fimExclusivoMs
-                && l.TipoMovimento == TipoDespesa
-                && l.PagamentoFatura == 0)
+            .Where(l => EhDespesaGastoNoMes(l, inicioMs, fimInclusivoMs))
             .SumAsync(l => (double?)l.Valor, cancellationToken) ?? 0d;
         return (receitas, despesas, receitas - despesas);
     }
@@ -120,14 +115,10 @@ public sealed class LancamentoRepository : ILancamentoRepository
         int ano,
         CancellationToken cancellationToken)
     {
-        (long inicioMs, long fimExclusivoMs) = IntervaloMes(mes, ano);
+        (long inicioMs, long fimInclusivoMs) = IntervaloMes(mes, ano);
         List<(int FormaPagamento, double Total)> lista = await _db.Lancamentos
             .AsNoTracking()
-            .Where(l =>
-                l.DataHora >= inicioMs
-                && l.DataHora < fimExclusivoMs
-                && l.TipoMovimento == TipoDespesa
-                && l.PagamentoFatura == 0)
+            .Where(l => EhDespesaGastoNoMes(l, inicioMs, fimInclusivoMs))
             .GroupBy(l => l.FormaPagamento ?? 0)
             .Select(g => new ValueTuple<int, double>(g.Key, g.Sum(x => (double)x.Valor)))
             .ToListAsync(cancellationToken);
@@ -140,24 +131,34 @@ public sealed class LancamentoRepository : ILancamentoRepository
         int ano,
         CancellationToken cancellationToken)
     {
-        (long inicioMs, long fimExclusivoMs) = IntervaloMes(mes, ano);
+        (long inicioMs, long fimInclusivoMs) = IntervaloMes(mes, ano);
         return await _db.Lancamentos
             .AsNoTracking()
-            .Where(l =>
-                l.DataHora >= inicioMs
-                && l.DataHora < fimExclusivoMs
-                && l.TipoMovimento == TipoDespesa
-                && l.PagamentoFatura == 0)
+            .Where(l => EhDespesaGastoNoMes(l, inicioMs, fimInclusivoMs))
             .OrderByDescending(l => l.Valor)
             .FirstOrDefaultAsync(cancellationToken);
     }
 
-    private static (long InicioMs, long FimExclusivoMs) IntervaloMes(int mes, int ano)
+    /// <summary>
+    /// Despesa efetiva do mês: pago, não é pagamento de fatura, dentro do intervalo (início do mês até 23:59:59).
+    /// </summary>
+    private static bool EhDespesaGastoNoMes(Lancamento l, long inicioMs, long fimInclusivoMs) =>
+        l.DataHora >= inicioMs
+        && l.DataHora <= fimInclusivoMs
+        && l.TipoMovimento == TipoDespesa
+        && l.Pago == PagoSim
+        && l.PagamentoFatura == 0;
+
+    /// <summary>
+    /// Início do 1º dia 00:00:00 e fim do último dia 23:59:59 (local), em ms — alinhado ao app Vox.
+    /// </summary>
+    private static (long InicioMs, long FimInclusivoMs) IntervaloMes(int mes, int ano)
     {
         DateTime inicio = new DateTime(ano, mes, 1, 0, 0, 0, DateTimeKind.Local);
-        DateTime fimExclusivo = inicio.AddMonths(1);
+        int ultimoDia = DateTime.DaysInMonth(ano, mes);
+        DateTime fim = new DateTime(ano, mes, ultimoDia, 23, 59, 59, DateTimeKind.Local);
         long inicioMs = new DateTimeOffset(inicio).ToUnixTimeMilliseconds();
-        long fimMs = new DateTimeOffset(fimExclusivo).ToUnixTimeMilliseconds();
-        return (inicioMs, fimMs);
+        long fimInclusivoMs = new DateTimeOffset(fim).ToUnixTimeMilliseconds();
+        return (inicioMs, fimInclusivoMs);
     }
 }
